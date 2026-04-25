@@ -1,6 +1,5 @@
 """POST /api/diarize/{video_id} — speaker diarization (issue fw-lua)."""
 
-import asyncio
 import json
 import subprocess
 
@@ -43,25 +42,46 @@ async def diarize_endpoint(video_id: str):
             skipped=True,
         )
 
-    # ---- YOUR CODE HERE ----
-    # Step 1: Extract audio from video
-    #   video_path = settings.videos_dir / f"{title}.mp4"
-    #   audio_path = diar_dir / f"{title}.wav"
-    #   Use subprocess.run to call:
-    #     ffmpeg -i <video_path> -vn -acodec pcm_s16le -ar 16000 -y <audio_path>
-    #
-    # Step 2: Run diarization
-    #   diar_segments = _alignment_service.diarize(str(audio_path))
-    #
-    # Step 3: Extract unique speakers
-    #   speakers = sorted(set(s["speaker"] for s in diar_segments))
-    #
-    # Step 4: Cache result
-    #   result = {"speakers": speakers, "segments": diar_segments}
-    #   diar_path.write_text(json.dumps(result))
-    #
-    # Step 5: Return DiarizeResponse
-    #   return DiarizeResponse(video_id=video_id, speakers=speakers, segments=diar_segments)
-    #
-    raise HTTPException(status_code=501, detail="Diarization not yet implemented")
-    # ---- END YOUR CODE ----
+    video_path = settings.videos_dir / f"{title}.mp4"
+    audio_path = diar_dir / f"{title}.wav"
+
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail=f"Original video not found for {video_id}")
+
+    try:
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-i",
+                str(video_path),
+                "-vn",
+                "-acodec",
+                "pcm_s16le",
+                "-ar",
+                "16000",
+                "-y",
+                str(audio_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="ffmpeg is not installed") from exc
+    except subprocess.CalledProcessError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"ffmpeg audio extraction failed: {exc.stderr.strip() or exc.stdout.strip()}",
+        ) from exc
+
+    diar_segments = _alignment_service.diarize(str(audio_path))
+    speakers = sorted({segment["speaker"] for segment in diar_segments})
+
+    result = {"speakers": speakers, "segments": diar_segments}
+    diar_path.write_text(json.dumps(result))
+
+    return DiarizeResponse(
+        video_id=video_id,
+        speakers=speakers,
+        segments=diar_segments,
+    )
