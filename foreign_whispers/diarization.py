@@ -8,6 +8,7 @@ Requires accepting the pyannote/speaker-diarization-3.1 licence on HuggingFace
 and providing an HF token.  Returns empty list with a warning if the dep is
 absent or the token is missing.
 """
+import copy
 import logging
 
 logger = logging.getLogger(__name__)
@@ -43,3 +44,44 @@ def diarize_audio(audio_path: str, hf_token: str | None = None) -> list[dict]:
     except Exception as exc:
         logger.warning("Diarization failed for %s: %s", audio_path, exc)
         return []
+
+
+def assign_speakers(segments: list[dict], diarization: list[dict]) -> list[dict]:
+    """Assign a speaker label to each transcription segment.
+
+    For each segment, find the diarization interval with maximum temporal
+    overlap and copy its speaker label. If diarization is empty, default all
+    segments to ``SPEAKER_00``.
+
+    Args:
+        segments: Whisper-style ``[{id, start, end, text, ...}]``.
+        diarization: pyannote-style ``[{start_s, end_s, speaker}]``.
+
+    Returns:
+        New list of segment dicts, each with an added ``speaker`` key.
+        The input list is not mutated.
+    """
+    labeled_segments = copy.deepcopy(segments)
+
+    if not diarization:
+        for segment in labeled_segments:
+            segment["speaker"] = "SPEAKER_00"
+        return labeled_segments
+
+    for segment in labeled_segments:
+        seg_start = float(segment.get("start", 0.0))
+        seg_end = float(segment.get("end", seg_start))
+        best_speaker = "SPEAKER_00"
+        best_overlap = -1.0
+
+        for diar in diarization:
+            diar_start = float(diar.get("start_s", 0.0))
+            diar_end = float(diar.get("end_s", diar_start))
+            overlap = max(0.0, min(seg_end, diar_end) - max(seg_start, diar_start))
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_speaker = diar.get("speaker", "SPEAKER_00")
+
+        segment["speaker"] = best_speaker
+
+    return labeled_segments
