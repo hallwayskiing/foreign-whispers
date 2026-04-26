@@ -28,6 +28,7 @@ dependencies = [
     "logfire",
     "pyannote-audio>=4.0.4,<5",
     "torchcodec==0.11.1",
+    "silero-vad>=6.2.1",
 ]
 
 [dependency-groups]
