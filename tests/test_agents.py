@@ -7,10 +7,15 @@ from foreign_whispers.reranking import (
 )
 
 
-def test_get_shorter_returns_empty_stub():
-    """Stub returns [] until students implement it."""
-    result = get_shorter_translations("hello", "hola", 1.0)
-    assert result == []
+def test_get_shorter_translations_returns_shorter_candidates():
+    result = get_shorter_translations(
+        "The military wants to carry out a large number of operations right now.",
+        "Los militares quieren llevar a cabo una gran cantidad de operaciones en este momento.",
+        3.0,
+    )
+    assert result
+    assert all(isinstance(candidate, TranslationCandidate) for candidate in result)
+    assert all(len(candidate.text) < len("Los militares quieren llevar a cabo una gran cantidad de operaciones en este momento.") for candidate in result)
 
 
 def test_analyze_failures_returns_dataclass():

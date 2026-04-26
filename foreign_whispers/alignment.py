@@ -10,10 +10,13 @@ The module provides:
 - ``decide_action`` — per-segment policy that chooses accept / stretch / shift / retry / fail.
 - ``global_align`` — greedy left-to-right pass that schedules all segments
   on a shared timeline, tracking cumulative drift from gap shifts.
+- ``global_align_dp`` — dynamic-programming search over stretch/gap choices
+  that can recover segments the greedy threshold policy gives up on.
 
 No external dependencies — stdlib only.
 """
 import dataclasses
+import math
 import re
 import unicodedata
 from enum import Enum
@@ -37,8 +40,31 @@ _SYLLABLE_RATE = 4.5  # syllables per second for Romance languages
 
 
 def _estimate_duration(text: str) -> float:
-    """Estimate TTS duration in seconds using a syllable-rate heuristic."""
-    return _count_syllables(text) / _SYLLABLE_RATE
+    """Estimate TTS duration in seconds using a pause-aware heuristic.
+
+    The old estimate used only ``syllables / 4.5``.  That works tolerably for
+    toy strings but underestimates longer utterances because it ignores:
+
+    - extra articulation cost from additional word boundaries
+    - clause-level pauses induced by punctuation
+
+    We keep the syllable-rate term as the backbone so policy thresholds remain
+    stable, then add small adjustments for multi-word phrasing and punctuation.
+    """
+    clean = text.strip()
+    if not clean:
+        return 0.0
+
+    syllables = _count_syllables(clean)
+    words = re.findall(r"\b\w+\b", clean, flags=re.UNICODE)
+    comma_like_pauses = len(re.findall(r"[,;:]", clean))
+    strong_pauses = len(re.findall(r"[.!?]", clean))
+
+    base_duration = syllables / _SYLLABLE_RATE
+    word_boundary_overhead = max(0, len(words) - 2) * 0.04
+    pause_overhead = comma_like_pauses * 0.10 + strong_pauses * 0.18
+
+    return base_duration + word_boundary_overhead + pause_overhead
 
 
 @dataclasses.dataclass
@@ -213,6 +239,82 @@ def compute_segment_metrics(
     return metrics
 
 
+def _silence_after(silence_regions: list[dict], end_s: float) -> float:
+    """Return the first silence span that starts immediately after *end_s*."""
+    for region in silence_regions:
+        if region.get("label") == "silence" and region["start_s"] >= end_s - 0.1:
+            return max(0.0, region["end_s"] - region["start_s"])
+    return 0.0
+
+
+def _candidate_gap_shifts(
+    m: SegmentMetrics,
+    available_gap_s: float,
+    max_stretch: float,
+) -> list[float]:
+    """Return gap-shift candidates worth evaluating for one segment.
+
+    The useful breakpoints are:
+
+    - ``0``: no silence borrowed
+    - enough silence to bring the segment within the requested stretch ceiling
+    - enough silence to eliminate stretching entirely
+    - the full local silence span
+    """
+    if available_gap_s <= 0:
+        return [0.0]
+
+    needed_for_max_stretch = max(0.0, (m.predicted_tts_s / max_stretch) - m.source_duration_s)
+    needed_for_natural_fit = max(0.0, m.overflow_s)
+
+    candidates = {0.0, round(min(available_gap_s, needed_for_max_stretch), 3)}
+    candidates.add(round(min(available_gap_s, needed_for_natural_fit), 3))
+    candidates.add(round(available_gap_s, 3))
+
+    return sorted(candidate for candidate in candidates if candidate >= 0.0)
+
+
+def _alignment_option(
+    m: SegmentMetrics,
+    gap_shift_s: float,
+    max_stretch: float,
+) -> tuple[AlignAction, float, tuple[int, int, int, int]]:
+    """Score one alignment choice for dynamic programming.
+
+    Returns the chosen action, the applied stretch factor, and a lexicographic
+    cost tuple. Lower is better.
+    """
+    effective_duration = m.source_duration_s + gap_shift_s
+    if effective_duration <= 0:
+        effective_stretch = math.inf
+    else:
+        effective_stretch = m.predicted_tts_s / effective_duration
+
+    if gap_shift_s > 0 and effective_stretch <= max_stretch:
+        action = AlignAction.GAP_SHIFT
+        stretch = 1.0 if effective_stretch <= 1.1 else effective_stretch
+    elif effective_stretch <= 1.1:
+        action = AlignAction.ACCEPT
+        stretch = 1.0
+    elif effective_stretch <= max_stretch:
+        action = AlignAction.MILD_STRETCH
+        stretch = effective_stretch
+    elif effective_stretch <= 2.5:
+        action = AlignAction.REQUEST_SHORTER
+        stretch = 1.0
+    else:
+        action = AlignAction.FAIL
+        stretch = 1.0
+
+    cost = (
+        1 if action == AlignAction.FAIL else 0,
+        1 if stretch > 1.4 else 0,
+        1 if action == AlignAction.REQUEST_SHORTER else 0,
+        int(round(max(0.0, stretch - 1.0) * 1000)),
+    )
+    return action, stretch, cost
+
+
 def global_align(
     metrics:         list[SegmentMetrics],
     silence_regions: list[dict],
@@ -261,16 +363,10 @@ def global_align(
     Returns:
         One ``AlignedSegment`` per input metric, in order.
     """
-    def _silence_after(end_s: float) -> float:
-        for r in silence_regions:
-            if r.get("label") == "silence" and r["start_s"] >= end_s - 0.1:
-                return r["end_s"] - r["start_s"]
-        return 0.0
-
     aligned, cumulative_drift = [], 0.0
 
     for m in metrics:
-        action    = decide_action(m, available_gap_s=_silence_after(m.source_end))
+        action    = decide_action(m, available_gap_s=_silence_after(silence_regions, m.source_end))
         gap_shift = 0.0
         stretch   = 1.0
 
@@ -295,6 +391,92 @@ def global_align(
             stretch_factor  = stretch,
         ))
 
+        cumulative_drift += gap_shift
+
+    return aligned
+
+
+def global_align_dp(
+    metrics: list[SegmentMetrics],
+    silence_regions: list[dict],
+    max_stretch: float = 1.4,
+) -> list[AlignedSegment]:
+    """Search for a lower-cost alignment plan than ``global_align``.
+
+    Unlike the greedy threshold policy, this optimizer can combine a partial
+    gap shift with stretching. That lets it rescue segments that would
+    otherwise fall into ``REQUEST_SHORTER`` when nearby silence is sufficient
+    to bring the required stretch back within the same safe ceiling used by
+    ``global_align``.
+
+    The search is dynamic programming over segment prefixes. For each segment
+    we evaluate a small set of gap-shift candidates and keep the lexicographically
+    best plan under this objective:
+
+    1. minimize ``FAIL`` segments
+    2. minimize severe stretches (``stretch_factor > 1.4``)
+    3. minimize cumulative drift beyond a 3.0s soft budget
+    4. minimize ``REQUEST_SHORTER`` segments
+    5. minimize total cumulative drift
+    6. minimize the number of gap-shifts
+    7. minimize residual stretch penalty
+
+    By default ``max_stretch`` stays at ``1.4`` so the optimizer does not
+    trade translation retries for more aggressive time-stretching. Callers can
+    opt into a looser ceiling explicitly if they want to explore that tradeoff.
+    """
+    if not metrics:
+        return []
+
+    drift_budget_ms = 3000
+    states: dict[int, tuple[tuple[int, int, int, int, int, int, int], list[tuple[AlignAction, float, float]]]] = {
+        0: ((0, 0, 0, 0, 0, 0, 0), [])
+    }
+
+    for m in metrics:
+        available_gap_s = _silence_after(silence_regions, m.source_end)
+        next_states: dict[int, tuple[tuple[int, int, int, int, int, int, int], list[tuple[AlignAction, float, float]]]] = {}
+
+        for drift_ms, (prefix_cost, prefix_plan) in states.items():
+            for gap_shift_s in _candidate_gap_shifts(m, available_gap_s, max_stretch):
+                action, stretch, option_cost = _alignment_option(m, gap_shift_s, max_stretch)
+                next_drift_ms = drift_ms + int(round(gap_shift_s * 1000))
+                transition_cost = (
+                    option_cost[0],
+                    option_cost[1],
+                    max(0, next_drift_ms - drift_budget_ms) - max(0, drift_ms - drift_budget_ms),
+                    option_cost[2],
+                    next_drift_ms - drift_ms,
+                    1 if gap_shift_s > 0 else 0,
+                    option_cost[3],
+                )
+                total_cost = tuple(a + b for a, b in zip(prefix_cost, transition_cost))
+                candidate_plan = prefix_plan + [(action, gap_shift_s, stretch)]
+
+                incumbent = next_states.get(next_drift_ms)
+                if incumbent is None or total_cost < incumbent[0]:
+                    next_states[next_drift_ms] = (total_cost, candidate_plan)
+
+        states = next_states
+
+    _, best_plan = min(states.values(), key=lambda item: item[0])
+
+    aligned: list[AlignedSegment] = []
+    cumulative_drift = 0.0
+    for m, (action, gap_shift, stretch) in zip(metrics, best_plan):
+        sched_start = m.source_start + cumulative_drift
+        sched_end = sched_start + m.source_duration_s + gap_shift
+        aligned.append(AlignedSegment(
+            index=m.index,
+            original_start=m.source_start,
+            original_end=m.source_end,
+            scheduled_start=sched_start,
+            scheduled_end=sched_end,
+            text=m.translated_text,
+            action=action,
+            gap_shift_s=gap_shift,
+            stretch_factor=stretch,
+        ))
         cumulative_drift += gap_shift
 
     return aligned

@@ -367,15 +367,16 @@ def _candidate_score(
     context_prev: str,
     context_next: str,
 ) -> float:
-    predicted_duration = len(candidate_text) / 15.0
+    from foreign_whispers.alignment import _estimate_duration
+
+    predicted_duration = _estimate_duration(candidate_text)
     duration_error = (predicted_duration - target_duration_s) ** 2
     semantic_penalty = 1.0 - _semantic_similarity(candidate_text, baseline_es)
     context_penalty = _context_overlap_penalty(candidate_text, context_prev, context_next)
     source_penalty = 0.0 if _matches_source_punctuation(candidate_text, source_text) else 0.1
     over_budget_penalty = 0.0
-    budget_chars = max(1, int(round(target_duration_s * 15.0)))
-    if len(candidate_text) > budget_chars:
-        over_budget_penalty = ((len(candidate_text) - budget_chars) / budget_chars) * 0.5
+    if predicted_duration > target_duration_s:
+        over_budget_penalty = ((predicted_duration - target_duration_s) / target_duration_s) * 0.5
     return duration_error + (semantic_penalty * 0.9) + context_penalty + source_penalty + over_budget_penalty
 
 
@@ -618,4 +619,3 @@ def _canonical_candidate_key(text: str) -> str:
     normalized = unicodedata.normalize("NFKD", _normalize_text(text).lower())
     normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
     return normalized
-

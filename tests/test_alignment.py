@@ -6,6 +6,7 @@ from foreign_whispers.alignment import (
     compute_segment_metrics,
     decide_action,
     global_align,
+    global_align_dp,
 )
 
 
@@ -149,3 +150,68 @@ def test_global_align_gap_shift_accumulates_drift():
     aligned = global_align(metrics, silence_regions=silence)
     assert aligned[0].action == AlignAction.GAP_SHIFT
     assert aligned[1].scheduled_start > aligned[1].original_start
+
+
+def test_global_align_dp_recovers_request_shorter_with_silence():
+    en = {"segments": [{"start": 0.0, "end": 1.0, "text": "x"}]}
+    es = {"segments": [{"start": 0.0, "end": 1.0, "text": "ba" * 9}]}
+    silence = [{"start_s": 1.0, "end_s": 2.1, "label": "silence"}]
+
+    metrics = compute_segment_metrics(en, es)
+    greedy = global_align(metrics, silence_regions=silence)
+    improved = global_align_dp(metrics, silence_regions=silence)
+
+    assert greedy[0].action == AlignAction.REQUEST_SHORTER
+    assert improved[0].action == AlignAction.GAP_SHIFT
+    assert improved[0].gap_shift_s == pytest.approx((2.0 / 1.4) - 1.0, abs=0.02)
+    assert improved[0].stretch_factor == pytest.approx(1.4, abs=0.02)
+
+
+def test_global_align_dp_uses_partial_gap_to_avoid_retry():
+    en = {"segments": [{"start": 0.0, "end": 1.0, "text": "x"}]}
+    es = {"segments": [{"start": 0.0, "end": 1.0, "text": "ba" * 9}]}
+    silence = [{"start_s": 1.0, "end_s": 1.45, "label": "silence"}]
+
+    metrics = compute_segment_metrics(en, es)
+    improved = global_align_dp(metrics, silence_regions=silence, max_stretch=1.4)
+
+    assert improved[0].action == AlignAction.GAP_SHIFT
+    assert improved[0].gap_shift_s == pytest.approx((2.0 / 1.4) - 1.0, abs=0.02)
+    assert improved[0].stretch_factor == pytest.approx(1.4, abs=0.02)
+
+
+def test_global_align_dp_without_silence_matches_greedy_policy():
+    en = {"segments": [{"start": 0.0, "end": 1.0, "text": "x"}]}
+    es = {"segments": [{"start": 0.0, "end": 1.0, "text": "ba" * 9}]}
+
+    metrics = compute_segment_metrics(en, es)
+    greedy = global_align(metrics, silence_regions=[])
+    improved = global_align_dp(metrics, silence_regions=[])
+
+    assert improved[0].action == greedy[0].action == AlignAction.REQUEST_SHORTER
+    assert improved[0].stretch_factor == greedy[0].stretch_factor == 1.0
+
+
+def test_global_align_dp_limits_cumulative_drift_budget():
+    en_segments = []
+    es_segments = []
+    silence = []
+
+    for i in range(10):
+        start = i * 1.45
+        end = start + 1.0
+        en_segments.append({"start": start, "end": end, "text": "x"})
+        es_segments.append({"start": start, "end": end, "text": "ba" * 9})
+        silence.append({"start_s": end, "end_s": end + 0.45, "label": "silence"})
+
+    metrics = compute_segment_metrics({"segments": en_segments}, {"segments": es_segments})
+    improved = global_align_dp(metrics, silence_regions=silence, max_stretch=1.4)
+
+    n_shifted = sum(1 for segment in improved if segment.action == AlignAction.GAP_SHIFT)
+    n_retries = sum(1 for segment in improved if segment.action == AlignAction.REQUEST_SHORTER)
+    total_drift = improved[-1].scheduled_end - improved[-1].original_end
+
+    assert n_shifted == 6
+    assert n_retries == 4
+    assert total_drift == pytest.approx(6 * ((2.0 / 1.4) - 1.0), abs=0.02)
+    assert total_drift < 3.0
