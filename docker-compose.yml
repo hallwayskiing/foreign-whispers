@@ -29,7 +29,7 @@ services:
   chatterbox-gpu:
     container_name: foreign-whispers-tts
     profiles: [nvidia]
-    image: travisvn/chatterbox-tts-api:latest
+    image: hanseware/chatterbox-tts-api:blackwell-20260425
     restart: unless-stopped
     shm_size: "8gb"
     ports:
@@ -38,12 +38,6 @@ services:
       - DEVICE=cuda
       - DEFAULT_MODEL=multilingual
       - PORT=8020
-    entrypoint: 
-      - /bin/bash
-      - -c
-      - |
-        uv pip install --python /app/.venv/bin/python torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
-        python main.py
     volumes:
       - chatterbox-models:/app/models
       - ./pipeline_data/speakers:/app/voices
