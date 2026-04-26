@@ -11,28 +11,9 @@ from fastapi.responses import FileResponse
 from api.src.core.config import settings
 from api.src.core.dependencies import resolve_title
 from api.src.services.tts_service import TTSService
+from foreign_whispers.voice_resolution import resolve_speaker_wav
 
 router = APIRouter(prefix="/api")
-
-
-def _resolve_speaker_wav(target_language: str, speaker_id: str | None = None) -> str:
-    """Resolve a Chatterbox voice reference under pipeline_data/speakers.
-
-    Returns a path relative to the speakers root, e.g. ``es/SPEAKER_00.wav``.
-    Falls back to ``{lang}/default.wav`` and then ``default.wav``.
-    """
-    speakers_dir = settings.base_dir / "pipeline_data" / "speakers"
-
-    if speaker_id:
-        speaker_path = speakers_dir / target_language / f"{speaker_id}.wav"
-        if speaker_path.exists():
-            return f"{target_language}/{speaker_id}.wav"
-
-    lang_default = speakers_dir / target_language / "default.wav"
-    if lang_default.exists():
-        return f"{target_language}/default.wav"
-
-    return "default.wav"
 
 
 async def _run_in_threadpool(executor, fn, *args, **kwargs):
@@ -47,6 +28,10 @@ async def tts_endpoint(
     request: Request,
     config: str = Query(..., pattern=r"^c-[0-9a-f]{7}$"),
     alignment: bool = Query(False),
+    speaker_wav: str | None = Query(
+        None,
+        description="Reference voice WAV path relative to pipeline_data/speakers, e.g. 'es/default.wav'.",
+    ),
 ):
     """Generate TTS audio for a translated transcript.
 
@@ -81,10 +66,13 @@ async def tts_endpoint(
     segments = translated.get("segments", [])
     target_language = translated.get("language", "es")
     unique_speakers = sorted({seg.get("speaker", "SPEAKER_00") for seg in segments})
-    voice_map = {
-        speaker: _resolve_speaker_wav(target_language, speaker)
-        for speaker in unique_speakers
-    }
+    voice_map = None
+
+    if speaker_wav is None and unique_speakers:
+        voice_map = {
+            speaker: resolve_speaker_wav(settings.speakers_dir, target_language, speaker)
+            for speaker in unique_speakers
+        }
 
     await _run_in_threadpool(
         None,
@@ -92,6 +80,7 @@ async def tts_endpoint(
         source_path,
         str(audio_dir),
         alignment=alignment,
+        speaker_wav=speaker_wav,
         voice_map=voice_map,
     )
 

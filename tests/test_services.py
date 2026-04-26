@@ -211,7 +211,13 @@ class TestTTSService:
         with patch("api.src.services.tts_service.tts_text_file_to_speech") as mock:
             svc.text_file_to_speech("/src/transcript.json", "/out/audio")
 
-        mock.assert_called_once_with("/src/transcript.json", "/out/audio", mock_engine)
+        mock.assert_called_once_with(
+            "/src/transcript.json",
+            "/out/audio",
+            mock_engine,
+            alignment=None,
+            speaker_wav=None,
+        )
 
     def test_title_for_video_id(self, tmp_path):
         from api.src.services.tts_service import TTSService

@@ -107,14 +107,18 @@ class FWClient:
         video_id: str,
         config: str = BASELINE,
         alignment: bool = False,
+        speaker_wav: str | None = None,
     ) -> dict:
         """Synthesize TTS audio for the translated transcript.
 
         Returns ``{video_id, audio_path, config}``.
         """
+        params = {"config": config, "alignment": str(alignment).lower()}
+        if speaker_wav is not None:
+            params["speaker_wav"] = speaker_wav
         return self._post(
             f"/api/tts/{video_id}",
-            params={"config": config, "alignment": str(alignment).lower()},
+            params=params,
         )
 
     def stitch(self, video_id: str, config: str = BASELINE) -> dict:

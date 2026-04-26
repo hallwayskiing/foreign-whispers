@@ -63,6 +63,11 @@ class Settings(BaseSettings):
         return self.data_dir / "tts_audio" / self.tts_model_dir
 
     @property
+    def speakers_dir(self) -> Path:
+        root = self.data_dir.parent if self.data_dir.name == "api" else self.data_dir
+        return root / "speakers"
+
+    @property
     def dubbed_videos_dir(self) -> Path:
         return self.data_dir / "dubbed_videos"
 

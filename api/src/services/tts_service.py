@@ -30,6 +30,7 @@ class TTSService:
         output_path: str,
         *,
         alignment: bool | None = None,
+        speaker_wav: str | None = None,
         voice_map: dict[str, str] | None = None,
     ) -> None:
         """Generate time-aligned TTS audio from a translated JSON transcript."""
@@ -47,6 +48,7 @@ class TTSService:
             output_path,
             self.tts_engine,
             alignment=alignment,
+            speaker_wav=speaker_wav,
         )
 
     def _text_file_to_speech_with_voices(
