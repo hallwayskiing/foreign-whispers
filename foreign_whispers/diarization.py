@@ -1,17 +1,50 @@
 """Speaker diarization using pyannote.audio.
 
-Extracted from notebooks/foreign_whispers_pipeline.ipynb (M2-align).
-
 Optional dependency: pyannote.audio
     pip install pyannote.audio
-Requires accepting the pyannote/speaker-diarization-3.1 licence on HuggingFace
-and providing an HF token.  Returns empty list with a warning if the dep is
-absent or the token is missing.
+Requires accepting the pyannote/speaker-diarization-community-1 agreement on
+Hugging Face and providing an HF token. Returns empty list with a warning if
+the dependency is absent or the token is missing.
 """
 import copy
+import importlib
 import logging
+import warnings
 
 logger = logging.getLogger(__name__)
+PYANNOTE_PIPELINE = "pyannote/speaker-diarization-community-1"
+_TORCHCODEC_WARNING_FRAGMENT = "torchcodec is not installed correctly"
+
+
+def _load_pyannote_pipeline_class():
+    """Import pyannote Pipeline and surface torchcodec decoder warnings.
+
+    pyannote 4.x relies on torchcodec for file-based audio decoding. When the
+    runtime is missing FFmpeg shared libraries or an incompatible torchcodec
+    wheel is installed, pyannote emits a warning during import and file-based
+    diarization later fails. Catch that warning early so callers get a direct,
+    actionable log message instead of a silent empty result.
+    """
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            Pipeline = importlib.import_module("pyannote.audio").Pipeline
+    except (ImportError, TypeError):
+        logger.warning("pyannote.audio not installed — returning empty diarization.")
+        return None
+
+    for warning in caught:
+        message = str(warning.message)
+        if _TORCHCODEC_WARNING_FRAGMENT in message:
+            logger.warning(
+                "torchcodec is unavailable for pyannote file decoding. "
+                "Install a torchcodec build compatible with the current torch "
+                "version and ensure FFmpeg shared libraries are available. %s",
+                message,
+            )
+            return None
+
+    return Pipeline
 
 
 def diarize_audio(audio_path: str, hf_token: str | None = None) -> list[dict]:
@@ -25,21 +58,26 @@ def diarize_audio(audio_path: str, hf_token: str | None = None) -> list[dict]:
         logger.warning("No HF token provided — diarization skipped.")
         return []
 
-    try:
-        from pyannote.audio import Pipeline
-    except (ImportError, TypeError):
-        logger.warning("pyannote.audio not installed — returning empty diarization.")
+    Pipeline = _load_pyannote_pipeline_class()
+    if Pipeline is None:
         return []
 
     try:
-        pipeline    = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-3.1",
-            use_auth_token=hf_token,
+        pipeline = Pipeline.from_pretrained(
+            PYANNOTE_PIPELINE,
+            token=hf_token,
         )
-        diarization = pipeline(audio_path)
+        output = pipeline(audio_path)
+
+        if hasattr(output, "speaker_diarization"):
+            return [
+                {"start_s": turn.start, "end_s": turn.end, "speaker": speaker}
+                for turn, speaker in output.speaker_diarization
+            ]
+
         return [
             {"start_s": turn.start, "end_s": turn.end, "speaker": speaker}
-            for turn, _, speaker in diarization.itertracks(yield_label=True)
+            for turn, _, speaker in output.itertracks(yield_label=True)
         ]
     except Exception as exc:
         logger.warning("Diarization failed for %s: %s", audio_path, exc)

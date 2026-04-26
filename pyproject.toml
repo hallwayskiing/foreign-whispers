@@ -7,7 +7,7 @@ requires-python = ">=3.11,<3.12"
 dependencies = [
     "torch>=2.0",
     "torchaudio>=2.0",
-    "TTS>=0.22.0",
+    "coqui-tts>=0.27.5",
     "yt-dlp",
     "youtube-transcript-api",
     "openai-whisper",
@@ -26,6 +26,8 @@ dependencies = [
     "setuptools<81",
     "pyyaml>=6.0.3",
     "logfire",
+    "pyannote-audio>=4.0.4,<5",
+    "torchcodec==0.11.1",
 ]
 
 [dependency-groups]
@@ -37,14 +39,12 @@ dev = [
 alignment = [
     "logfire",
     "silero-vad",
-    "pyannote.audio",
+    "pyannote.audio>=4.0.4,<5",
 ]
 
 [tool.uv]
 constraint-dependencies = [
     "onnxruntime<1.24",
-    "numpy<2",
-    "transformers<4.46",
 ]
 find-links = [
     "https://download.pytorch.org/whl/cu130",
