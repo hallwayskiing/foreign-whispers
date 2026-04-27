@@ -5,6 +5,7 @@ import pathlib
 from unittest.mock import MagicMock, patch, call
 
 import pytest
+from pydub import AudioSegment
 
 
 # ---------------------------------------------------------------------------
@@ -35,7 +36,7 @@ class TestDownloadService:
             mock.return_value = str(tmp_path / "videos" / "Test.mp4")
             result = svc.download_video("https://youtube.com/watch?v=abc123", str(tmp_path / "videos"))
 
-        mock.assert_called_once_with("https://youtube.com/watch?v=abc123", str(tmp_path / "videos"))
+        mock.assert_called_once_with("https://youtube.com/watch?v=abc123", str(tmp_path / "videos"), None)
         assert result.endswith("Test.mp4")
 
     def test_download_caption_delegates(self, tmp_path):
@@ -46,7 +47,7 @@ class TestDownloadService:
             mock.return_value = str(tmp_path / "youtube_captions" / "Test.txt")
             result = svc.download_caption("https://youtube.com/watch?v=abc123", str(tmp_path / "youtube_captions"))
 
-        mock.assert_called_once_with("https://youtube.com/watch?v=abc123", str(tmp_path / "youtube_captions"))
+        mock.assert_called_once_with("https://youtube.com/watch?v=abc123", str(tmp_path / "youtube_captions"), None)
         assert result.endswith("Test.txt")
 
     def test_read_caption_segments(self, tmp_path):
@@ -218,6 +219,28 @@ class TestTTSService:
             alignment=None,
             speaker_wav=None,
         )
+
+    def test_speaker_index_parsing(self, tmp_path):
+        from api.src.services.tts_service import TTSService
+
+        svc = TTSService(ui_dir=tmp_path, tts_engine=MagicMock())
+        assert svc._speaker_index("SPEAKER_00") == 0
+        assert svc._speaker_index("SPEAKER_02") == 2
+        assert svc._speaker_index("narrator") == 0
+
+    def test_apply_speaker_tone_preserves_audio_presence(self, tmp_path):
+        from api.src.services.tts_service import TTSService
+        import api.src.services.tts_service as tts_service_mod
+
+        base = AudioSegment.silent(duration=500)
+        tts_service_mod.AudioSegment = AudioSegment
+        shifted = TTSService._apply_speaker_tone(base, "SPEAKER_02")
+        raised = TTSService._apply_speaker_tone(base, "SPEAKER_00")
+
+        assert shifted is not None
+        assert abs(len(shifted) - len(base)) <= 2
+        assert raised is not None
+        assert abs(len(raised) - len(base)) <= 2
 
     def test_title_for_video_id(self, tmp_path):
         from api.src.services.tts_service import TTSService

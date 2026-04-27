@@ -194,7 +194,9 @@ export function usePipeline() {
     try {
       const dl = await run("download", () => downloadVideo(video.url));
       await run("transcribe", () => transcribeVideo(dl.video_id, settings.useYoutubeCaptions));
-      if (settings.diarization.length > 0) {
+      const needsDiarization =
+        settings.diarization.length > 0 || settings.voiceCloning.length > 0;
+      if (needsDiarization) {
         await run("diarize", () => diarizeVideo(dl.video_id));
       }
       await run("translate", () => translateVideo(dl.video_id, "es"));

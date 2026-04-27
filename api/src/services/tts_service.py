@@ -122,7 +122,7 @@ class TTSService:
             )
 
         raw_wav_map: dict[int, bytes | None] = {}
-        worker_count = int(os.getenv("FW_TTS_WORKERS", "3"))
+        worker_count = int(os.getenv("FW_TTS_WORKERS", "1"))
 
         with tempfile.TemporaryDirectory() as synth_dir:
             def _do_synth(index: int, text: str, speaker_wav: str | None) -> tuple[int, bytes | None]:
@@ -173,6 +173,7 @@ class TTSService:
                     use_alignment,
                     tmpdir,
                 )
+                seg_audio = self._apply_speaker_tone(seg_audio, meta["speaker"])
 
                 aligned_seg = meta["aligned_seg"]
                 segment_details.append(
@@ -201,6 +202,43 @@ class TTSService:
         stem = pathlib.Path(source_path).stem
         tts_engine._write_align_report(output_path, stem, metrics_list, aligned_list, segment_details)
         print("success!")
+
+    @staticmethod
+    def _speaker_index(speaker: str) -> int:
+        """Extract a numeric index from labels like SPEAKER_00."""
+        try:
+            return max(0, int(str(speaker).rsplit("_", 1)[-1]))
+        except (ValueError, TypeError):
+            return 0
+
+    @classmethod
+    def _apply_speaker_tone(cls, segment_audio: AudioSegment | None, speaker: str) -> AudioSegment | None:
+        """Adjust pitch by speaker index so higher indices sound deeper."""
+        if segment_audio is None:
+            return None
+
+        speaker_index = cls._speaker_index(speaker)
+        semitone_map = {
+            0: 2.5,
+            1: -1.5,
+            2: -4.5,
+        }
+        semitones = semitone_map.get(speaker_index, max(-6.0, -4.5 - 1.2 * (speaker_index - 2)))
+        if abs(semitones) < 0.01:
+            return segment_audio
+
+        pitch_factor = 2 ** (semitones / 12.0)
+        shifted_rate = max(1000, int(segment_audio.frame_rate * pitch_factor))
+        shifted = segment_audio._spawn(
+            segment_audio.raw_data,
+            overrides={"frame_rate": shifted_rate},
+        ).set_frame_rate(segment_audio.frame_rate)
+        target_len = len(segment_audio)
+        if len(shifted) < target_len:
+            shifted += AudioSegment.silent(duration=target_len - len(shifted))
+        elif len(shifted) > target_len:
+            shifted = shifted[:target_len]
+        return shifted
 
     @staticmethod
     def title_for_video_id(video_id: str, search_dir: pathlib.Path) -> str | None:

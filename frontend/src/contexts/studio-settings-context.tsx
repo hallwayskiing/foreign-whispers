@@ -29,6 +29,11 @@ export function StudioSettingsProvider({ children }: { children: ReactNode }) {
       const current = prev[group];
       if (SINGLE_SELECT.has(group)) {
         const next = current.includes(value) ? [] : [value];
+        if (group === "voiceCloning") {
+          const diarization =
+            next.length > 0 && prev.diarization.length === 0 ? ["pyannote"] : prev.diarization;
+          return { ...prev, [group]: next, diarization };
+        }
         return { ...prev, [group]: next };
       }
       const next = current.includes(value)
